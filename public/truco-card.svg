@@ -1,0 +1,6 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="8" y="8" width="104" height="104" rx="16" fill="#fbc02d" stroke="#fff" stroke-width="4"/>
+  <rect x="24" y="24" width="72" height="72" rx="12" fill="#fff" stroke="#fbc02d" stroke-width="3"/>
+  <text x="60" y="60" text-anchor="middle" dominant-baseline="middle" font-size="32" font-family="Arial, Helvetica, sans-serif" fill="#fbc02d" font-weight="bold">T</text>
+  <text x="60" y="90" text-anchor="middle" font-size="14" font-family="Arial, Helvetica, sans-serif" fill="#fbc02d">Truco</text>
+</svg> 

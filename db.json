@@ -1,0 +1,44 @@
+{
+  "games": [
+    {
+      "id": 1,
+      "type": "tranca",
+      "mode": "bots",
+      "teamMode": "1v1",
+      "status": "active",
+      "players": [
+        {
+          "id": 1,
+          "name": "Jogador 1",
+          "hand": [
+            { "suit": "♠", "value": "A", "color": "black" },
+            { "suit": "♥", "value": "K", "color": "red" },
+            { "suit": "♦", "value": "Q", "color": "red" },
+            { "suit": "♣", "value": "J", "color": "black" },
+            { "suit": "♠", "value": "10", "color": "black" }
+          ],
+          "score": 0
+        },
+        {
+          "id": 2,
+          "name": "Robô 1",
+          "hand": [],
+          "score": 0
+        }
+      ],
+      "deck": [],
+      "table": [],
+      "currentTurn": 1,
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "name": "Jogador 1",
+      "email": "player1@example.com",
+      "gamesPlayed": 0,
+      "gamesWon": 0
+    }
+  ]
+} 
