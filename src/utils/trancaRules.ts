@@ -97,9 +97,19 @@ export function isValidMeld(cards: CardType[]): { isValid: boolean, type: MeldTy
     return { isValid: false, type: null };
   }
 
+  // Regra: 3 preto (Tranca) e 3 vermelho não podem ser usados em jogos.
+  if (cards.some(c => c.isTranca || c.isRedThree)) {
+    return { isValid: false, type: null };
+  }
+
   const wildcards = cards.filter(c => c.isWildcard);
   const regularCards = cards.filter(c => !c.isWildcard);
 
+  // Regra: Não pode haver mais de 1 coringa por jogo.
+  if (wildcards.length > 1) {
+    return { isValid: false, type: null };
+  }
+  
   if (regularCards.length === 0) {
     return { isValid: false, type: null };
   }
@@ -107,7 +117,9 @@ export function isValidMeld(cards: CardType[]): { isValid: boolean, type: MeldTy
   // Validação para Jogo de Trinca (Set)
   const firstValue = regularCards[0].value;
   if (regularCards.every(c => c.value === firstValue)) {
-    if (wildcards.length >= regularCards.length) {
+    // Regra: Um jogo de coringas puros não é válido se forem todos do mesmo valor
+    // A regra de `wildcards.length > 1` já previne isso, mas é uma checagem de segurança.
+    if (wildcards.length >= regularCards.length && regularCards.length > 0) {
       return { isValid: false, type: null };
     }
     const canastaType = cards.length >= 7 ? (wildcards.length > 0 ? 'dirty' : 'clean') : undefined;

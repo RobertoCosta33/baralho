@@ -104,24 +104,26 @@ const CardFace = ({ card }: CardFaceProps) => (
   </CardContent>
 );
 
-interface GameCardProps {
+export interface GameCardProps {
   card: CardType;
+  onClick?: (id: string) => void;
   isSelected?: boolean;
-  isHighlighted?: boolean;
   isNewlyDrawn?: boolean;
   isDiscardValid?: boolean;
+  noInteraction?: boolean;
+  isHighlighted?: boolean;
   isDrawnCard?: boolean;
-  onClick?: (cardId: string) => void;
 }
 
 export const GameCard = ({ 
   card, 
+  onClick, 
   isSelected, 
-  isHighlighted, 
   isNewlyDrawn, 
   isDiscardValid,
+  noInteraction,
+  isHighlighted,
   isDrawnCard,
-  onClick 
 }: GameCardProps) => {
   return (
     <StyledGameCard
