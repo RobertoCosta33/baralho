@@ -24,6 +24,18 @@ import {
 } from "@/components/tranca/TrancaComponents";
 
 // #region Styled Components
+const pulseGlowAnimation = keyframes`
+  0% { 
+    box-shadow: 0 0 5px rgba(255, 215, 0, 0.5);
+  }
+  50% { 
+    box-shadow: 0 0 20px rgba(255, 215, 0, 0.8), 0 0 30px rgba(255, 215, 0, 0.6);
+  }
+  100% { 
+    box-shadow: 0 0 5px rgba(255, 215, 0, 0.5);
+  }
+`;
+
 const GameArea = styled.div`
   display: flex;
   flex-direction: column;
@@ -45,6 +57,36 @@ const ScoreDisplay = styled(Box)<{ position: "left" | "right" }>`
   padding: 0.5rem 1rem;
   border-radius: 8px;
   z-index: 10;
+`;
+
+const RedThreeAnimation = styled.div<{ $isAnimating: boolean }>`
+  position: fixed;
+  z-index: 1000;
+  transition: ${({ $isAnimating }) => $isAnimating ? 'all 1.5s cubic-bezier(0.4, 0, 0.2, 1)' : 'none'};
+  pointer-events: none;
+  transform-origin: center;
+  
+  ${({ $isAnimating }) => $isAnimating && `
+    animation: float 1.5s ease-in-out;
+  `}
+  
+  @keyframes float {
+    0% {
+      transform: scale(1) rotate(0deg);
+    }
+    25% {
+      transform: scale(1.1) rotate(5deg);
+    }
+    50% {
+      transform: scale(1.05) rotate(-3deg);
+    }
+    75% {
+      transform: scale(1.1) rotate(2deg);
+    }
+    100% {
+      transform: scale(0.8) rotate(0deg);
+    }
+  }
 `;
 
 const TableGrid = styled.div`
@@ -170,6 +212,12 @@ const DiscardPilePlaceholder = styled.div`
   display: flex;
   align-items: center;
 `;
+
+const ReplacementCardHighlight = styled.div`
+  animation: ${pulseGlowAnimation} 2s ease-in-out infinite;
+  border-radius: 8px;
+  padding: 2px;
+`;
 // #endregion
 
 // #region Types and Interfaces
@@ -178,6 +226,7 @@ interface Player {
   name: string;
   hand: CardType[];
   isBot: boolean;
+  redThreesInHand: CardType[];
 }
 
 interface Team {
@@ -198,11 +247,13 @@ interface GameState {
   isDiscardPileLocked: boolean;
   deadPiles: [CardType[], CardType[]];
   currentPlayerIndex: number;
-  turnPhase: "DRAW" | "DISCARD" | "ENDED" | "MUST_JUSTIFY_DISCARD";
+  turnPhase: "DRAW" | "DISCARD" | "ENDED" | "MUST_JUSTIFY_DISCARD" | "PROCESSING_RED_THREES";
   gamePhase: "PLAYING" | "GAME_OVER";
   winner: Team | null;
   lastDrawnCardId: string | null;
   justificationCardId: string | null;
+  processingRedThreeIndex: number;
+  hasDrawnCardThisTurn: boolean;
 }
 
 type GameAction =
@@ -214,7 +265,9 @@ type GameAction =
   | { type: "ADD_TO_MELD"; payload: { cardIds: string[]; meldId: string } }
   | { type: "TAKE_DISCARD_PILE" }
   | { type: "ACKNOWLEDGE_DRAWN_CARD" }
-  | { type: "SORT_HAND"; payload: { playerId: string; hand: CardType[] } };
+  | { type: "SORT_HAND"; payload: { playerId: string; hand: CardType[] } }
+  | { type: "PROCESS_RED_THREES" }
+  | { type: "COMPLETE_RED_THREE_PROCESSING" };
 // #endregion
 
 // #region Game Reducer
@@ -242,10 +295,10 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       const { deck, hands, deadPiles } = dealCards();
 
       const initialPlayers: Player[] = [
-        { id: "player-0", name: "Você", hand: hands[0], isBot: false },
-        { id: "player-1", name: "Oponente Esquerda", hand: hands[1], isBot: true, },
-        { id: "player-2", name: "Parceiro", hand: hands[2], isBot: true },
-        { id: "player-3", name: "Oponente Direita", hand: hands[3], isBot: true, },
+        { id: "player-0", name: "Você", hand: hands[0], isBot: false, redThreesInHand: [] },
+        { id: "player-1", name: "Oponente Esquerda", hand: hands[1], isBot: true, redThreesInHand: [] },
+        { id: "player-2", name: "Parceiro", hand: hands[2], isBot: true, redThreesInHand: [] },
+        { id: "player-3", name: "Oponente Direita", hand: hands[3], isBot: true, redThreesInHand: [] },
       ];
 
       const teams: [Team, Team] = [
@@ -253,26 +306,12 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         { id: "team-1", playerIds: ["player-1", "player-3"], melds: [], score: state.teams[1].score, roundScore: 0, hasPickedUpDeadPile: false, redThrees: [], },
       ];
 
-      // Auto-meld red threes at the start
-      const newDeck = [...deck];
-      initialPlayers.forEach((player) => {
-        const redThreesInHand = player.hand.filter((c) => c.isRedThree);
-        if (redThreesInHand.length > 0) {
-          player.hand = player.hand.filter((c) => !c.isRedThree);
-          const team = teams.find((t) => t.playerIds.includes(player.id))!;
-          team.redThrees.push(...redThreesInHand);
-          for (let i = 0; i < redThreesInHand.length; i++) {
-            const newCard = newDeck.pop();
-            if(newCard) player.hand.push(newCard);
-          }
-        }
-      });
-
+      // Não mover automaticamente os 3s vermelhos - eles ficam na mão até a vez do jogador
       const updatedTeams = teams.map(t => ({ ...t, roundScore: calculateLiveScore(t) }));
 
       return {
         ...state,
-        deck: newDeck,
+        deck: deck,
         players: initialPlayers,
         teams: updatedTeams as [Team, Team],
         deadPiles: deadPiles as [CardType[], CardType[]],
@@ -284,6 +323,8 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         lastDrawnCardId: null,
         justificationCardId: null,
         isDiscardPileLocked: false,
+        processingRedThreeIndex: -1,
+        hasDrawnCardThisTurn: false,
       };
     }
     case "DRAW_FROM_DECK": {
@@ -304,13 +345,13 @@ function gameReducer(state: GameState, action: GameAction): GameState {
           
           const updatedTeams = newTeams.map(t => ({ ...t, roundScore: calculateLiveScore(t) }));
 
-          return { ...state, deck: newDeck, players: newPlayers, teams: updatedTeams as [Team, Team], turnPhase: "DRAW", lastDrawnCardId: newCard?.id || null };
+          return { ...state, deck: newDeck, players: newPlayers, teams: updatedTeams as [Team, Team], turnPhase: "DRAW", lastDrawnCardId: newCard?.id || null, hasDrawnCardThisTurn: true };
       }
       
       const newHand = [...player.hand, drawnCard];
       newPlayers[state.currentPlayerIndex] = { ...player, hand: newHand };
 
-      return { ...state, deck: newDeck, players: newPlayers, turnPhase: "DISCARD", lastDrawnCardId: drawnCard.id };
+      return { ...state, deck: newDeck, players: newPlayers, turnPhase: "DISCARD", lastDrawnCardId: drawnCard.id, hasDrawnCardThisTurn: true };
     }
     case "DISCARD": {
       if (state.turnPhase !== "DISCARD") return state;
@@ -362,6 +403,7 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         lastDrawnCardId: null,
         justificationCardId: null,
         isDiscardPileLocked: cardToDiscard.isTranca,
+        hasDrawnCardThisTurn: false,
       };
     }
     case "MELD": {
@@ -444,18 +486,120 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       const newPlayers = state.players.map(p => p.id === playerId ? { ...p, hand } : p);
       return { ...state, players: newPlayers };
     }
+    case "PROCESS_RED_THREES": {
+      return { ...state, turnPhase: "PROCESSING_RED_THREES" };
+    }
+    case "COMPLETE_RED_THREE_PROCESSING": {
+      const player = state.players[state.currentPlayerIndex];
+      const team = state.teams.find(t => t.playerIds.includes(player.id))!;
+      const redThree = player.hand.find(c => c.isRedThree);
+      if (!redThree) return state;
+
+      const newHand = player.hand.filter(c => c.id !== redThree.id);
+      const newPlayers = state.players.map(p => p.id === player.id ? { ...p, hand: newHand } : p);
+      const newTeams = state.teams.map(t => t.id === team.id ? { ...t, redThrees: [...t.redThrees, redThree] } : t) as [Team, Team];
+
+      // Adicionar uma carta do monte se ainda houver cartas
+      let finalPlayers = newPlayers;
+      const finalDeck = [...state.deck];
+      let newCardId: string | null = null;
+      if (finalDeck.length > 0) {
+        const newCard = finalDeck.pop()!;
+        newCardId = newCard.id;
+        finalPlayers = newPlayers.map(p => p.id === player.id ? { ...p, hand: [...newHand, newCard] } : p);
+      }
+
+      // Se o jogador já comprou uma carta na rodada, vai para fase de descarte
+      // Se não comprou, pode comprar uma carta adicional
+      const nextTurnPhase = state.hasDrawnCardThisTurn ? "DISCARD" : "DRAW";
+
+      return {
+        ...state,
+        players: finalPlayers,
+        teams: newTeams,
+        deck: finalDeck,
+        turnPhase: nextTurnPhase,
+        justificationCardId: null,
+        processingRedThreeIndex: -1,
+        lastDrawnCardId: newCardId, // Marca a carta do monte como recém-comprada
+      };
+    }
   }
   return state;
 }
 // #endregion
 
 function getSmartSortedMeld(meld: Meld): CardType[] {
-  const sorted = [...meld.cards].sort((a, b) => {
+  const wildcards = meld.cards.filter(c => c.isWildcard);
+  const regularCards = meld.cards.filter(c => !c.isWildcard);
+
+  // Para jogos de trinca (set), posiciona os coringas no início.
+  if (meld.type === 'set') {
+    return [...wildcards, ...regularCards];
+  }
+
+  // Lógica para sequências
+  if (meld.type === 'run') {
+    if (regularCards.length === 0) {
+      return meld.cards; // Apenas coringas, não há como ordenar.
+    }
+
+    // Verifica se é uma sequência baixa com Ás (A-2-3) para ordenar corretamente.
+    const isAceLow = regularCards.some(c => c.value === 'A') && regularCards.some(c => c.value === '2');
+
+    const sortedRegularCards = [...regularCards].sort((a, b) => {
+      let valA = getCardNumericValue(a);
+      let valB = getCardNumericValue(b);
+      if (isAceLow) {
+        if (a.value === 'A') valA = 1;
+        if (b.value === 'A') valB = 1;
+      }
+      return valA - valB;
+    });
+
+    const tempWildcards = [...wildcards];
+    
+    let minCardVal = getCardNumericValue(sortedRegularCards[0]);
+    if (isAceLow && sortedRegularCards[0].value === 'A') minCardVal = 1;
+    
+    const maxCardVal = getCardNumericValue(sortedRegularCards[sortedRegularCards.length - 1]);
+    
+    // Determina o tamanho da sequência ideal e quantos coringas a estendem.
+    const idealSequenceLength = maxCardVal - minCardVal + 1;
+    const wildcardsUsedInGaps = idealSequenceLength - sortedRegularCards.length;
+    const extendingWildcards = tempWildcards.length - wildcardsUsedInGaps;
+    
+    // Coringas que estendem a sequência vão para o início, conforme a regra.
+    const startVal = minCardVal - extendingWildcards;
+    const endVal = maxCardVal;
+
+    const result: CardType[] = [];
+    const mutableRegularCards = [...sortedRegularCards];
+
+    for (let val = startVal; val <= endVal; val++) {
+      const cardForValueIndex = mutableRegularCards.findIndex(c => {
+        let cardVal = getCardNumericValue(c);
+        if (isAceLow && c.value === 'A') cardVal = 1;
+        return cardVal === val;
+      });
+
+      if (cardForValueIndex !== -1) {
+        result.push(mutableRegularCards[cardForValueIndex]);
+        mutableRegularCards.splice(cardForValueIndex, 1);
+      } else if (tempWildcards.length > 0) {
+        result.push(tempWildcards.pop()!);
+      }
+    }
+    
+    return result;
+  }
+
+  // Fallback para a ordenação antiga caso o tipo de jogo não seja identificado.
+  return [...meld.cards].sort((a, b) => {
     if (a.isWildcard && !b.isWildcard) return 1;
     if (!a.isWildcard && b.isWildcard) return -1;
     return getCardValue(a) - getCardValue(b);
   });
-  return sorted;
 }
 
 const MeldAreaDisplay = ({
@@ -558,10 +702,14 @@ function TrancaGame() {
     lastDrawnCardId: null,
     justificationCardId: null,
     isDiscardPileLocked: false,
+    processingRedThreeIndex: -1,
+    hasDrawnCardThisTurn: false,
   });
 
-  const { players, teams, discardPile, currentPlayerIndex, turnPhase, gamePhase, winner, lastDrawnCardId, justificationCardId, isDiscardPileLocked, } = state;
+  const { players, teams, discardPile, currentPlayerIndex, turnPhase, gamePhase, winner, lastDrawnCardId, justificationCardId, isDiscardPileLocked, processingRedThreeIndex } = state;
   const [selectedCards, setSelectedCards] = useState<string[]>([]);
+  const [animatingRedThree, setAnimatingRedThree] = useState<{ card: CardType; startPos: { x: number; y: number }; endPos: { x: number; y: number } } | null>(null);
+  const [replacementCardId, setReplacementCardId] = useState<string | null>(null);
   
   useEffect(() => {
     dispatch({ type: "INITIALIZE_GAME" });
@@ -569,7 +717,113 @@ function TrancaGame() {
 
   const humanPlayer = players.find((p) => p.id === "player-0");
   const playerTeam = teams.find((t) => t.playerIds.includes("player-0"));
+  const isPlayerTurn = currentPlayerIndex === 0 && gamePhase === "PLAYING";
 
+  // Lógica de animação dos 3s vermelhos para o jogador humano
+  useEffect(() => {
+    if (turnPhase === "PROCESSING_RED_THREES" && humanPlayer) {
+      const redThreesInHand = humanPlayer.hand.filter(c => c.isRedThree);
+      if (redThreesInHand.length > 0 && processingRedThreeIndex === -1) {
+        const redThree = redThreesInHand[0];
+        const startPos = { x: 50, y: 85 };
+        const endPos = { x: 15, y: 15 };
+        setAnimatingRedThree({ card: redThree, startPos, endPos });
+        setTimeout(() => {
+          dispatch({ type: "COMPLETE_RED_THREE_PROCESSING" });
+          setAnimatingRedThree(null);
+        }, 1500);
+      }
+    }
+  }, [turnPhase, humanPlayer, processingRedThreeIndex, dispatch]);
+
+  // Efeito para o jogador HUMANO iniciar o processamento de 3s vermelhos
+  useEffect(() => {
+    if (isPlayerTurn && turnPhase === "DRAW" && humanPlayer?.hand.some(c => c.isRedThree)) {
+      dispatch({ type: "PROCESS_RED_THREES" });
+    }
+  }, [isPlayerTurn, turnPhase, humanPlayer, dispatch]);
+  
+  // Efeito para o BOT controlar seu turno
+  useEffect(() => {
+    const currentPlayer = players[currentPlayerIndex];
+    if (currentPlayer?.isBot && gamePhase === "PLAYING") {
+      const handleBotTurn = () => {
+        const totalRedThreesOnBoard = teams.reduce((acc, t) => acc + t.redThrees.length, 0);
+
+        // ESTADO 1: Finalizar o processamento de um 3 vermelho que já foi iniciado.
+        if (turnPhase === 'PROCESSING_RED_THREES') {
+          dispatch({ type: 'COMPLETE_RED_THREE_PROCESSING' });
+          return;
+        }
+
+        // ESTADO 2: Iniciar o processamento de um 3 vermelho, se houver.
+        if (totalRedThreesOnBoard < 4 && currentPlayer.hand.some(c => c.isRedThree)) {
+          dispatch({ type: 'PROCESS_RED_THREES' });
+          return;
+        }
+
+        // ESTADO 3: Comprar uma carta.
+        if (turnPhase === 'DRAW') {
+          dispatch({ type: 'DRAW_FROM_DECK' });
+          return;
+        }
+        
+        // ESTADO 4: Fazer um jogo ou descartar.
+        if (turnPhase === 'DISCARD') {
+          const botHand = currentPlayer.hand;
+          
+          // Tenta fazer um jogo (meld)
+          const valueGroups: { [key: string]: CardType[] } = {};
+          botHand.forEach(card => {
+            if (!card.isWildcard && !card.isTranca && !card.isRedThree) {
+              if (!valueGroups[card.value]) valueGroups[card.value] = [];
+              valueGroups[card.value].push(card);
+            }
+          });
+
+          const cardsToMeldIds: string[] = [];
+          for (const value in valueGroups) {
+            if (valueGroups[value].length >= 3) {
+              cardsToMeldIds.push(...valueGroups[value].map(c => c.id));
+              break; 
+            }
+          }
+          
+          if (cardsToMeldIds.length > 0) {
+            dispatch({ type: "MELD", payload: { cardIds: cardsToMeldIds } });
+            return;
+          }
+
+          // Se não fez meld, descarta
+          const cardToDiscard = botHand
+            .filter(c => !c.isWildcard)
+            .sort((a,b) => getCardValue(a) - getCardValue(b))
+            .pop() || botHand[0]; 
+
+          if (cardToDiscard) {
+            dispatch({ type: "DISCARD", payload: { cardId: cardToDiscard.id } });
+          }
+        }
+      };
+
+      setTimeout(handleBotTurn, 1200);
+    }
+  }, [gamePhase, currentPlayerIndex, players, turnPhase, dispatch, teams]);
+
+  // Acknowledge a carta recém-comprada do monte após processar 3 vermelho
+  useEffect(() => {
+    if (lastDrawnCardId && turnPhase === "DRAW" && humanPlayer) {
+      const newlyDrawnCard = humanPlayer.hand.find(c => c.id === lastDrawnCardId);
+      if (newlyDrawnCard && !newlyDrawnCard.isRedThree) {
+        setReplacementCardId(lastDrawnCardId);
+        setTimeout(() => {
+          dispatch({ type: "ACKNOWLEDGE_DRAWN_CARD" });
+          setReplacementCardId(null);
+        }, 3000);
+      }
+    }
+  }, [lastDrawnCardId, turnPhase, humanPlayer, dispatch]);
+  
   const meldableMeldIds = useMemo(() => {
     if (!humanPlayer || !playerTeam || selectedCards.length !== 1) {
       return [];
@@ -591,53 +845,6 @@ function TrancaGame() {
     return meldValidation.isValid;
   };
 
-  useEffect(() => {
-    if (gamePhase !== "PLAYING" || turnPhase === "ENDED") return;
-
-    const currentPlayer = players[currentPlayerIndex];
-    if (currentPlayer?.isBot) {
-      const handleBotTurn = () => {
-        if (turnPhase === 'DRAW') {
-           // Lógica de Compra da IA (simplificada)
-           dispatch({ type: "DRAW_FROM_DECK" });
-        } else if (turnPhase === 'DISCARD') {
-          // Lógica de Baixar Jogo e Descartar da IA
-          const botHand = currentPlayer.hand;
-          const valueGroups: { [key: string]: CardType[] } = {};
-          botHand.forEach(card => {
-            if (!card.isWildcard && !card.isTranca && !card.isRedThree) {
-              if (!valueGroups[card.value]) valueGroups[card.value] = [];
-              valueGroups[card.value].push(card);
-            }
-          });
-
-          const cardsToMeldIds: string[] = [];
-          for (const value in valueGroups) {
-            if (valueGroups[value].length >= 3) {
-              cardsToMeldIds.push(...valueGroups[value].map(c => c.id));
-            }
-          }
-          
-          if (cardsToMeldIds.length > 0) {
-            dispatch({ type: "MELD", payload: { cardIds: cardsToMeldIds } });
-          }
-          
-          const remainingHand = botHand.filter(c => !cardsToMeldIds.includes(c.id));
-          if (remainingHand.length > 0) {
-            // Lógica de descarte: descarta a carta de menor valor que não seja coringa
-             const cardToDiscard = remainingHand.sort((a,b) => getCardValue(a) - getCardValue(b)).find(c => !c.isWildcard);
-             if (cardToDiscard) {
-                dispatch({ type: "DISCARD", payload: { cardId: cardToDiscard.id } });
-             } else if (remainingHand.length > 0) {
-                dispatch({ type: "DISCARD", payload: { cardId: remainingHand[0].id } });
-             }
-          }
-        }
-      };
-      setTimeout(handleBotTurn, 1500);
-    }
-  }, [gamePhase, currentPlayerIndex, players, turnPhase, dispatch]);
-
   const partnerPlayer = players.find((p) => p.id === "player-2");
   const leftOpponentPlayer = players.find((p) => p.id === "player-1");
   const rightOpponentPlayer = players.find((p) => p.id === "player-3");
@@ -645,11 +852,9 @@ function TrancaGame() {
   const opponentTeam = teams.find((t) => !t.playerIds.includes("player-0"));
 
   const topDiscard = discardPile.length > 0 ? discardPile[discardPile.length - 1] : null;
-  const isPlayerTurn = currentPlayerIndex === 0 && gamePhase === "PLAYING";
   const isSelectionMeldable = isValidMeldSelection(selectedCards);
 
   const handleCardClick = (cardId: string) => {
-    // Acknowledge a newly drawn card from deck, but not a justification card
     if (lastDrawnCardId && !justificationCardId) {
       dispatch({ type: "ACKNOWLEDGE_DRAWN_CARD" });
     }
@@ -660,7 +865,7 @@ function TrancaGame() {
         : [...current, cardId]
     );
   };
-
+  
   const handleAddToMeld = (meldId: string) => {
     if (turnPhase === "MUST_JUSTIFY_DISCARD" && justificationCardId) {
       dispatch({ type: "ADD_TO_MELD", payload: { cardIds: [justificationCardId], meldId } });
@@ -674,13 +879,10 @@ function TrancaGame() {
   };
 
   const handleDiscardAreaClick = () => {
-    // Se for a vez de comprar e o lixo não estiver bloqueado, tenta pegar o lixo.
     if (isPlayerTurn && turnPhase === 'DRAW' && !isDiscardPileLocked) {
       dispatch({ type: "TAKE_DISCARD_PILE" });
       return;
     }
-
-    // Se for a vez de descartar e uma carta estiver selecionada, descarta.
     if (isPlayerTurn && turnPhase === 'DISCARD' && selectedCards.length === 1) {
       dispatch({ type: "DISCARD", payload: { cardId: selectedCards[0] } });
       setSelectedCards([]);
@@ -732,6 +934,28 @@ function TrancaGame() {
 
   return (
     <GameArea>
+      {/* Animação dos 3s vermelhos */}
+      {animatingRedThree && (
+        <RedThreeAnimation
+          $isAnimating={true}
+          style={{
+            left: `${animatingRedThree.startPos.x}%`,
+            top: `${animatingRedThree.startPos.y}%`,
+            transform: `translate(${animatingRedThree.endPos.x - animatingRedThree.startPos.x}%, ${animatingRedThree.endPos.y - animatingRedThree.startPos.y}%)`,
+          }}
+        >
+          <Box sx={{ 
+            transform: 'scale(0.8)',
+            filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.3))',
+            '&:hover': {
+              transform: 'scale(0.85)',
+            }
+          }}>
+            <GameCard card={animatingRedThree.card} noInteraction />
+          </Box>
+        </RedThreeAnimation>
+      )}
+
       <ScoreDisplay position="left">
         <Typography>Sua Dupla: {playerTeam?.score ?? 0} (Rodada: {playerTeam?.roundScore ?? 0})</Typography>
         <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'flex-start', mt: 1 }}>
@@ -823,13 +1047,25 @@ function TrancaGame() {
                   }
                 }}
               >
-                <GameCard
-                  card={card}
-                  onClick={handleCardClick}
-                  isSelected={selectedCards.includes(card.id)}
-                  isNewlyDrawn={card.id === lastDrawnCardId || card.id === justificationCardId}
-                  isJustificationCard={card.id === justificationCardId}
-                />
+                {card.id === replacementCardId ? (
+                  <ReplacementCardHighlight>
+                    <GameCard
+                      card={card}
+                      onClick={handleCardClick}
+                      isSelected={selectedCards.includes(card.id)}
+                      isNewlyDrawn={card.id === lastDrawnCardId || card.id === justificationCardId || card.id === replacementCardId}
+                      isJustificationCard={card.id === justificationCardId}
+                    />
+                  </ReplacementCardHighlight>
+                ) : (
+                  <GameCard
+                    card={card}
+                    onClick={handleCardClick}
+                    isSelected={selectedCards.includes(card.id)}
+                    isNewlyDrawn={card.id === lastDrawnCardId || card.id === justificationCardId || card.id === replacementCardId}
+                    isJustificationCard={card.id === justificationCardId}
+                  />
+                )}
               </Box>
             ))}
           </HandContainer>
