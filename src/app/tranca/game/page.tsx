@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useEffect, useState, Suspense, useMemo } from "react";
+import { useReducer, useEffect, useState, Suspense, useMemo, useRef } from "react";
 import { Box, Typography, Button } from "@mui/material";
 import styled, { keyframes, css } from "styled-components";
 import LockIcon from '@mui/icons-material/Lock';
@@ -59,15 +59,15 @@ const ScoreDisplay = styled(Box)<{ position: "left" | "right" }>`
   z-index: 10;
 `;
 
-const RedThreeAnimation = styled.div<{ $isAnimating: boolean }>`
+const CardAnimation = styled.div<{ $isAnimating: boolean; $duration: number }>`
   position: fixed;
   z-index: 1000;
-  transition: ${({ $isAnimating }) => $isAnimating ? 'all 1.5s cubic-bezier(0.4, 0, 0.2, 1)' : 'none'};
+  transition: ${({ $isAnimating, $duration }) => $isAnimating ? `all ${$duration}s cubic-bezier(0.25, 0.46, 0.45, 0.94)` : 'none'};
   pointer-events: none;
   transform-origin: center;
   
-  ${({ $isAnimating }) => $isAnimating && `
-    animation: float 1.5s ease-in-out;
+  ${({ $isAnimating, $duration }) => $isAnimating && `
+    animation: float ${$duration}s ease-in-out;
   `}
   
   @keyframes float {
@@ -75,13 +75,43 @@ const RedThreeAnimation = styled.div<{ $isAnimating: boolean }>`
       transform: scale(1) rotate(0deg);
     }
     25% {
-      transform: scale(1.1) rotate(5deg);
+      transform: scale(1.05) rotate(2deg);
     }
     50% {
-      transform: scale(1.05) rotate(-3deg);
+      transform: scale(1.02) rotate(-1deg);
     }
     75% {
-      transform: scale(1.1) rotate(2deg);
+      transform: scale(1.05) rotate(1deg);
+    }
+    100% {
+      transform: scale(0.8) rotate(0deg);
+    }
+  }
+`;
+
+const CardBackAnimation = styled.div<{ $isAnimating: boolean; $duration: number }>`
+  position: fixed;
+  z-index: 1000;
+  transition: ${({ $isAnimating, $duration }) => $isAnimating ? `all ${$duration}s cubic-bezier(0.25, 0.46, 0.45, 0.94)` : 'none'};
+  pointer-events: none;
+  transform-origin: center;
+  
+  ${({ $isAnimating, $duration }) => $isAnimating && `
+    animation: float ${$duration}s ease-in-out;
+  `}
+  
+  @keyframes float {
+    0% {
+      transform: scale(1) rotate(0deg);
+    }
+    25% {
+      transform: scale(1.05) rotate(2deg);
+    }
+    50% {
+      transform: scale(1.02) rotate(-1deg);
+    }
+    75% {
+      transform: scale(1.05) rotate(1deg);
     }
     100% {
       transform: scale(0.8) rotate(0deg);
@@ -221,6 +251,26 @@ const ReplacementCardHighlight = styled.div`
 // #endregion
 
 // #region Types and Interfaces
+interface AnimationInfo {
+  id: string;
+  card: CardType;
+  startPos: { x: number; y: number };
+  endPos: { x: number; y: number };
+  duration: number;
+  isCardBack?: boolean;
+}
+
+const gameAreaPositions = {
+  deck: { x: 45, y: 50 },
+  discard: { x: 55, y: 50 },
+  player: { x: 50, y: 85 },
+  partner: { x: 50, y: 15 },
+  leftOpponent: { x: 15, y: 50 },
+  rightOpponent: { x: 85, y: 50 },
+  playerMeld: { x: 50, y: 65 },
+  opponentMeld: { x: 50, y: 35 },
+};
+
 interface Player {
   id: string;
   name: string;
@@ -685,6 +735,14 @@ const MeldAreaDisplay = ({
   );
 };
 
+function usePrevious<T>(value: T): T | undefined {
+  const ref = useRef<T | undefined>(undefined);
+  useEffect(() => {
+    ref.current = value;
+  });
+  return ref.current;
+}
+
 function TrancaGame() {
   const [state, dispatch] = useReducer(gameReducer, {
     players: [],
@@ -707,9 +765,75 @@ function TrancaGame() {
   });
 
   const { players, teams, discardPile, currentPlayerIndex, turnPhase, gamePhase, winner, lastDrawnCardId, justificationCardId, isDiscardPileLocked, processingRedThreeIndex } = state;
+  const prevState = usePrevious(state);
+
   const [selectedCards, setSelectedCards] = useState<string[]>([]);
   const [animatingRedThree, setAnimatingRedThree] = useState<{ card: CardType; startPos: { x: number; y: number }; endPos: { x: number; y: number } } | null>(null);
   const [replacementCardId, setReplacementCardId] = useState<string | null>(null);
+  const [activeAnimations, setActiveAnimations] = useState<AnimationInfo[]>([]);
+
+  const playAnimation = (card: CardType, startPos: keyof typeof gameAreaPositions, endPos: keyof typeof gameAreaPositions, duration = 0.5, isCardBack = false) => {
+    const newAnimation: AnimationInfo = {
+      id: `anim-${Date.now()}-${Math.random()}`,
+      card,
+      startPos: gameAreaPositions[startPos],
+      endPos: gameAreaPositions[endPos],
+      duration,
+      isCardBack,
+    };
+    setActiveAnimations(prev => [...prev, newAnimation]);
+  };
+
+  const AnimationLayer = () => {
+    // Este useEffect limpa as animações após a sua duração
+    useEffect(() => {
+      const timers = activeAnimations.map(anim =>
+        setTimeout(() => {
+          setActiveAnimations(currentAnims => currentAnims.filter(a => a.id !== anim.id));
+        }, anim.duration * 1000 + 50)
+      );
+  
+      return () => {
+        timers.forEach(timer => clearTimeout(timer));
+      };
+    }, [activeAnimations]);
+  
+    return (
+      <>
+        {activeAnimations.map((anim, index) => (
+          anim.isCardBack ? (
+            <CardBackAnimation
+              key={anim.id}
+              $isAnimating={true}
+              $duration={anim.duration}
+              style={{
+                left: `${anim.startPos.x}%`,
+                top: `${anim.startPos.y}%`,
+                transform: `translate(${anim.endPos.x - anim.startPos.x}%, ${anim.endPos.y - anim.startPos.y}%) scale(0.8)`,
+                zIndex: 1000 + index,
+              }}
+            >
+              <OpponentCardBack />
+            </CardBackAnimation>
+          ) : (
+            <CardAnimation
+              key={anim.id}
+              $isAnimating={true}
+              $duration={anim.duration}
+              style={{
+                left: `${anim.startPos.x}%`,
+                top: `${anim.startPos.y}%`,
+                transform: `translate(${anim.endPos.x - anim.startPos.x}%, ${anim.endPos.y - anim.startPos.y}%) scale(0.8)`,
+                zIndex: 1000 + index,
+              }}
+            >
+              <GameCard card={anim.card} noInteraction />
+            </CardAnimation>
+          )
+        ))}
+      </>
+    );
+  };
   
   useEffect(() => {
     dispatch({ type: "INITIALIZE_GAME" });
@@ -718,6 +842,61 @@ function TrancaGame() {
   const humanPlayer = players.find((p) => p.id === "player-0");
   const playerTeam = teams.find((t) => t.playerIds.includes("player-0"));
   const isPlayerTurn = currentPlayerIndex === 0 && gamePhase === "PLAYING";
+
+  // Efeito para animações dos BOTS
+  useEffect(() => {
+    if (!prevState || gamePhase !== 'PLAYING') return;
+  
+    const prevPlayer = prevState.players[prevState.currentPlayerIndex];
+    if (!prevPlayer || !prevPlayer.isBot) return;
+
+    const botPosition = getPlayerPosition(prevPlayer.id);
+  
+    // Bot descartou
+    if (prevState.discardPile.length < state.discardPile.length) {
+      const discardedCard = state.discardPile[state.discardPile.length - 1];
+      playAnimation(discardedCard, botPosition, "discard");
+    }
+
+    // Bot comprou
+    const currentPlayer = state.players[prevState.currentPlayerIndex];
+    if (prevPlayer.hand.length < currentPlayer.hand.length && prevState.turnPhase === 'DRAW') {
+      const drawnCard = currentPlayer.hand.find(c => !prevPlayer.hand.some(pc => pc.id === c.id));
+      if (drawnCard) {
+        playAnimation(drawnCard, "deck", botPosition, 0.5, true);
+      }
+    }
+
+    // Bot fez um meld
+    const opponentTeam = state.teams.find(t => t.playerIds.includes(prevPlayer.id));
+    const prevOpponentTeam = prevState.teams.find(t => t.playerIds.includes(prevPlayer.id));
+    if (opponentTeam && prevOpponentTeam && opponentTeam.melds.length > prevOpponentTeam.melds.length) {
+      const newMeld = opponentTeam.melds.find(m => !prevOpponentTeam.melds.some(pm => pm.id === m.id));
+      if (newMeld) {
+        newMeld.cards.forEach(card => playAnimation(card, botPosition, "opponentMeld"));
+      }
+    } else if (opponentTeam && prevOpponentTeam && opponentTeam.melds.length === prevOpponentTeam.melds.length) {
+        // Lógica para adição em meld existente
+        for (const newMeld of opponentTeam.melds) {
+            const oldMeld = prevOpponentTeam.melds.find(m => m.id === newMeld.id);
+            if (oldMeld && newMeld.cards.length > oldMeld.cards.length) {
+                const addedCards = newMeld.cards.filter(c => !oldMeld.cards.some(oc => oc.id === c.id));
+                addedCards.forEach(card => playAnimation(card, botPosition, "opponentMeld"));
+            }
+        }
+    }
+  
+  }, [state, prevState, gamePhase]);
+
+  const getPlayerPosition = (playerId: string): keyof typeof gameAreaPositions => {
+    switch (playerId) {
+      case 'player-0': return 'player';
+      case 'player-1': return 'leftOpponent';
+      case 'player-2': return 'partner';
+      case 'player-3': return 'rightOpponent';
+      default: return 'player';
+    }
+  }
 
   // Lógica de animação dos 3s vermelhos para o jogador humano
   useEffect(() => {
@@ -743,6 +922,16 @@ function TrancaGame() {
     }
   }, [isPlayerTurn, turnPhase, humanPlayer, dispatch]);
   
+  // Dispara a animação quando o jogador compra do monte
+  useEffect(() => {
+    if (lastDrawnCardId && humanPlayer?.hand.some(c => c.id === lastDrawnCardId)) {
+      const card = humanPlayer.hand.find(c => c.id === lastDrawnCardId);
+      if (card) {
+        playAnimation(card, "deck", "player", 0.5, true);
+      }
+    }
+  }, [lastDrawnCardId]);
+
   // Efeito para o BOT controlar seu turno
   useEffect(() => {
     const currentPlayer = players[currentPlayerIndex];
@@ -880,10 +1069,18 @@ function TrancaGame() {
 
   const handleDiscardAreaClick = () => {
     if (isPlayerTurn && turnPhase === 'DRAW' && !isDiscardPileLocked) {
+      const topCard = state.discardPile[state.discardPile.length - 1];
+      if (topCard) {
+        state.discardPile.forEach(card => playAnimation(card, "discard", "player"));
+      }
       dispatch({ type: "TAKE_DISCARD_PILE" });
       return;
     }
     if (isPlayerTurn && turnPhase === 'DISCARD' && selectedCards.length === 1) {
+      const cardToDiscard = humanPlayer?.hand.find(c => c.id === selectedCards[0]);
+      if (cardToDiscard) {
+        playAnimation(cardToDiscard, "player", "discard");
+      }
       dispatch({ type: "DISCARD", payload: { cardId: selectedCards[0] } });
       setSelectedCards([]);
       return;
@@ -892,6 +1089,8 @@ function TrancaGame() {
 
   const handleMeldAreaClick = () => {
      if (!isPlayerTurn || (turnPhase !== "DISCARD" && turnPhase !== "MUST_JUSTIFY_DISCARD") || !isSelectionMeldable) return;
+     const cards = humanPlayer?.hand.filter(c => selectedCards.includes(c.id)) ?? [];
+     cards.forEach(card => playAnimation(card, "player", "playerMeld"));
      dispatch({ type: "MELD", payload: { cardIds: selectedCards } });
      setSelectedCards([]);
    };
@@ -934,10 +1133,12 @@ function TrancaGame() {
 
   return (
     <GameArea>
+      <AnimationLayer />
       {/* Animação dos 3s vermelhos */}
       {animatingRedThree && (
-        <RedThreeAnimation
+        <CardAnimation
           $isAnimating={true}
+          $duration={1.5}
           style={{
             left: `${animatingRedThree.startPos.x}%`,
             top: `${animatingRedThree.startPos.y}%`,
@@ -953,7 +1154,7 @@ function TrancaGame() {
           }}>
             <GameCard card={animatingRedThree.card} noInteraction />
           </Box>
-        </RedThreeAnimation>
+        </CardAnimation>
       )}
 
       <ScoreDisplay position="left">
