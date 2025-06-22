@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useEffect, useState, Suspense } from "react";
+import { useReducer, useEffect, useState, Suspense, useMemo } from "react";
 import { Box, Typography, Button } from "@mui/material";
 import styled, { keyframes, css } from "styled-components";
 import LockIcon from '@mui/icons-material/Lock';
@@ -13,6 +13,9 @@ import {
   calculateRoundScore,
   CanastaType,
   canJustifyDiscardPickup,
+  canAddToMeld,
+  getCardNumericValue,
+  calculateLiveScore,
 } from "@/utils/trancaRules";
 import { GameCard } from "@/components/tranca/GameCard";
 import {
@@ -61,16 +64,16 @@ const TableGrid = styled.div`
 
 const pulseGreenAnimation = keyframes`
   0% { 
-    background-color: rgba(144, 238, 144, 0.2);
-    border-color: rgba(144, 238, 144, 0.8);
+    background-color: rgba(144, 238, 144, 0.1);
+    border-color: rgba(144, 238, 144, 0.4);
   }
   50% { 
-    background-color: rgba(144, 238, 144, 0.4);
-    border-color: rgba(144, 238, 144, 1);
+    background-color: rgba(144, 238, 144, 0.2);
+    border-color: rgba(144, 238, 144, 0.6);
   }
   100% { 
-    background-color: rgba(144, 238, 144, 0.2);
-    border-color: rgba(144, 238, 144, 0.8);
+    background-color: rgba(144, 238, 144, 0.1);
+    border-color: rgba(144, 238, 144, 0.4);
   }
 `;
 
@@ -83,11 +86,11 @@ const PlayerArea = styled.div<{ $area: string; $isCurrentTurn?: boolean }>`
   justify-content: center;
   padding: 1rem;
   background-color: ${(props) =>
-    props.$isCurrentTurn ? "rgba(144, 238, 144, 0.2)" : "rgba(0, 0, 0, 0.1)"};
+    props.$isCurrentTurn ? "rgba(144, 238, 144, 0.1)" : "rgba(0, 0, 0, 0.1)"};
   border-radius: 8px;
   border: ${(props) =>
     props.$isCurrentTurn
-      ? "2px solid rgba(144, 238, 144, 0.8)"
+      ? "2px solid rgba(144, 238, 144, 0.4)"
       : "1px solid rgba(255, 255, 255, 0.2)"};
   transition: all 0.3s ease;
   
@@ -99,12 +102,22 @@ const PlayerArea = styled.div<{ $area: string; $isCurrentTurn?: boolean }>`
 `;
 
 const HandContainer = styled.div<{ $area: string }>`
-  display: ${({ $area }) =>
-    $area === "left-opponent" || $area === "right-opponent" ? "grid" : "flex"};
-  gap: 0.5rem;
+  display: flex;
+  gap: ${({ $area }) =>
+    $area === "left-opponent" || $area === "right-opponent" ? "0.5rem" : "0"};
   padding: 0.5rem;
   flex-wrap: wrap;
   justify-content: center;
+
+  ${({ $area }) =>
+    $area === "human-player" &&
+    `
+    & > div {
+      &:not(:first-child) {
+        margin-left: -45px;
+      }
+    }
+  `}
 
   ${({ $area }) =>
     ($area === "left-opponent" || $area === "right-opponent") &&
@@ -255,11 +268,13 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         }
       });
 
+      const updatedTeams = teams.map(t => ({ ...t, roundScore: calculateLiveScore(t) }));
+
       return {
         ...state,
         deck: newDeck,
         players: initialPlayers,
-        teams,
+        teams: updatedTeams as [Team, Team],
         deadPiles: deadPiles as [CardType[], CardType[]],
         discardPile: [],
         currentPlayerIndex: 0,
@@ -287,7 +302,9 @@ function gameReducer(state: GameState, action: GameAction): GameState {
           const newHand = newCard ? [...player.hand, newCard] : player.hand;
           newPlayers[state.currentPlayerIndex] = { ...player, hand: newHand };
           
-          return { ...state, deck: newDeck, players: newPlayers, teams: newTeams, turnPhase: "DRAW", lastDrawnCardId: newCard?.id || null };
+          const updatedTeams = newTeams.map(t => ({ ...t, roundScore: calculateLiveScore(t) }));
+
+          return { ...state, deck: newDeck, players: newPlayers, teams: updatedTeams as [Team, Team], turnPhase: "DRAW", lastDrawnCardId: newCard?.id || null };
       }
       
       const newHand = [...player.hand, drawnCard];
@@ -348,10 +365,14 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       };
     }
     case "MELD": {
-      if (state.turnPhase !== "DISCARD") return state;
+      if (state.turnPhase !== "DISCARD" && state.turnPhase !== "MUST_JUSTIFY_DISCARD") return state;
       const { cardIds } = action.payload;
       const player = state.players[state.currentPlayerIndex];
       const team = state.teams.find(t => t.playerIds.includes(player.id))!;
+      
+      if (state.turnPhase === "MUST_JUSTIFY_DISCARD" && !cardIds.includes(state.justificationCardId!)) {
+        return state; // Block if not using the justification card
+      }
       
       const cardsToMeld = player.hand.filter(c => cardIds.includes(c.id));
       if (cardsToMeld.length !== cardIds.length) return state;
@@ -363,16 +384,22 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       
       const newMeld: Meld = { id: `meld-${Date.now()}`, cards: cardsToMeld, type: meldValidation.type!, canastaType: meldValidation.canastaType };
       
-      const newTeams: [Team, Team] = state.teams.map(t => t.id === team.id ? { ...t, melds: [...t.melds, newMeld] } : t) as [Team, Team];
+      let newTeams: [Team, Team] = state.teams.map(t => t.id === team.id ? { ...t, melds: [...t.melds, newMeld] } : t) as [Team, Team];
       const newPlayers = state.players.map(p => p.id === player.id ? { ...p, hand: newHand } : p);
       
-      return { ...state, players: newPlayers, teams: newTeams, turnPhase: "DISCARD" };
+      newTeams = newTeams.map(t => ({ ...t, roundScore: calculateLiveScore(t) })) as [Team, Team];
+      
+      return { ...state, players: newPlayers, teams: newTeams, turnPhase: "DISCARD", justificationCardId: null };
     }
      case "ADD_TO_MELD": {
-      if (state.turnPhase !== "DISCARD") return state;
+      if (state.turnPhase !== "DISCARD" && state.turnPhase !== "MUST_JUSTIFY_DISCARD") return state;
       const { cardIds, meldId } = action.payload;
       const player = state.players[state.currentPlayerIndex];
       const team = state.teams.find(t => t.playerIds.includes(player.id))!;
+
+      if (state.turnPhase === "MUST_JUSTIFY_DISCARD" && !cardIds.includes(state.justificationCardId!)) {
+        return state; // Block if not using the justification card
+      }
 
       const meldToUpdate = team.melds.find(m => m.id === meldId);
       if (!meldToUpdate) return state;
@@ -387,10 +414,12 @@ function gameReducer(state: GameState, action: GameAction): GameState {
 
       const newHand = player.hand.filter(c => !cardIds.includes(c.id));
       const updatedMeld: Meld = { ...meldToUpdate, cards: prospectiveMeldCards, canastaType: meldValidation.canastaType };
-      const newTeams: [Team, Team] = state.teams.map(t => t.id === team.id ? { ...t, melds: t.melds.map(m => m.id === meldId ? updatedMeld : m) } : t ) as [Team, Team];
+      let newTeams: [Team, Team] = state.teams.map(t => t.id === team.id ? { ...t, melds: t.melds.map(m => m.id === meldId ? updatedMeld : m) } : t ) as [Team, Team];
       const newPlayers = state.players.map(p => p.id === player.id ? { ...p, hand: newHand } : p);
 
-      return { ...state, players: newPlayers, teams: newTeams };
+      newTeams = newTeams.map(t => ({ ...t, roundScore: calculateLiveScore(t) })) as [Team, Team];
+
+      return { ...state, players: newPlayers, teams: newTeams, turnPhase: "DISCARD", justificationCardId: null };
     }
      case "TAKE_DISCARD_PILE": {
       if (state.turnPhase !== "DRAW" || state.isDiscardPileLocked) return state;
@@ -405,7 +434,7 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       const newHand = [...player.hand, ...state.discardPile];
       const newPlayers = state.players.map(p => p.id === player.id ? { ...p, hand: newHand } : p);
 
-      return { ...state, players: newPlayers, discardPile: [], turnPhase: "DISCARD" };
+      return { ...state, players: newPlayers, discardPile: [], turnPhase: "MUST_JUSTIFY_DISCARD", justificationCardId: topCard.id };
     }
     case "ACKNOWLEDGE_DRAWN_CARD": {
       return { ...state, lastDrawnCardId: null, justificationCardId: null };
@@ -441,50 +470,66 @@ const MeldAreaDisplay = ({
   highlightedMeldIds?: string[];
 }) => {
   const getBorderColor = (canastaType?: CanastaType) => {
-    if (canastaType === "clean") return "#4caf50";
-    if (canastaType === "dirty") return "#f57c00";
+    if (canastaType === "clean") return "blue";
+    if (canastaType === "dirty") return "red";
+    if (canastaType === "real") return "purple";
     return "transparent";
   };
 
+  const sortedMelds = useMemo(() => {
+    return [...melds].sort((a, b) => {
+      const aValue = getCardNumericValue(a.cards.find(c => !c.isWildcard) || a.cards[0]);
+      const bValue = getCardNumericValue(b.cards.find(c => !c.isWildcard) || b.cards[0]);
+      return bValue - aValue;
+    });
+  }, [melds]);
+
   if (melds.length === 0) {
-    return (
-      <Box sx={{ width: "100%", textAlign: "center", my: "auto" }}>
-        <Typography variant="h6" sx={{ mb: 1, fontSize: "1rem" }}>
-          {teamName}
-        </Typography>
-        <Typography variant="body2" sx={{ color: "rgba(255, 255, 255, 0.7)" }}>
-          Nenhum jogo na mesa
-        </Typography>
-      </Box>
-    );
+    return <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.7)", mt: 2 }}>Nenhum jogo na mesa</Typography>;
   }
 
   return (
-    <Box sx={{ width: "100%", textAlign: "center" }}>
-      <Typography variant="h6" sx={{ mb: 1, fontSize: "1rem" }}>
-        {teamName}
-      </Typography>
-      <Box sx={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "1rem" }}>
-        {melds.map((meld) => {
+    <Box sx={{ p: 1 }}>
+      <Typography sx={{ textAlign: "center", mb: 2, fontWeight: "bold" }}>{teamName}</Typography>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '1rem' }}>
+        {sortedMelds.map((meld) => {
           const sortedCards = getSmartSortedMeld(meld);
-          const isHighlighted = highlightedMeldIds?.includes(meld.id);
+          const isHighlighted = highlightedMeldIds.includes(meld.id);
 
           return (
             <Box
               key={meld.id}
-              onClick={(e) => { if (onMeldClick) { e.stopPropagation(); onMeldClick(meld.id); } }}
+              onClick={() => onMeldClick?.(meld.id)}
               sx={{
                 cursor: onMeldClick ? "pointer" : "default",
-                padding: "0.5rem",
                 border: `3px solid ${ isHighlighted ? "#ffd700" : getBorderColor(meld.canastaType) }`,
                 borderRadius: "8px",
-                backgroundColor: isHighlighted ? "rgba(255, 215, 0, 0.2)" : "transparent",
+                p: 1,
+                backgroundColor: isHighlighted ? "rgba(255, 215, 0, 0.2)" : "rgba(0,0,0,0.1)",
+                transition: "all 0.2s ease",
+                "&:hover": onMeldClick
+                  ? {
+                      borderColor: "lightblue",
+                      backgroundColor: "rgba(0,0,0,0.2)",
+                    }
+                  : {},
               }}
             >
-              <Box sx={{ display: "flex", justifyContent: "center" }}>
-                {sortedCards.map((card) => (
-                  <Box key={card.id} sx={{ position: "relative" }}>
-                    <GameCard card={card} />
+              <Box sx={{ display: 'flex', position: 'relative' }}>
+                {sortedCards.map((card, index) => (
+                  <Box
+                    key={card.id}
+                    sx={{
+                      marginLeft: index > 0 ? "-45px" : 0,
+                      transition: "transform 0.2s ease",
+                      "&:hover": {
+                        transform: "translateY(-10px) scale(1.05)",
+                        zIndex: 10,
+                      },
+                      zIndex: index,
+                    }}
+                  >
+                    <GameCard card={card} noInteraction />
                   </Box>
                 ))}
               </Box>
@@ -517,13 +562,26 @@ function TrancaGame() {
 
   const { players, teams, discardPile, currentPlayerIndex, turnPhase, gamePhase, winner, lastDrawnCardId, justificationCardId, isDiscardPileLocked, } = state;
   const [selectedCards, setSelectedCards] = useState<string[]>([]);
-  const [highlightedMeldIds] = useState<string[]>([]);
-
+  
   useEffect(() => {
     dispatch({ type: "INITIALIZE_GAME" });
   }, []);
 
   const humanPlayer = players.find((p) => p.id === "player-0");
+  const playerTeam = teams.find((t) => t.playerIds.includes("player-0"));
+
+  const meldableMeldIds = useMemo(() => {
+    if (!humanPlayer || !playerTeam || selectedCards.length !== 1) {
+      return [];
+    }
+    const selectedCard = humanPlayer.hand.find(c => c.id === selectedCards[0]);
+    if (!selectedCard) {
+      return [];
+    }
+    return playerTeam.melds
+      .filter(meld => canAddToMeld(selectedCard, meld).canAdd)
+      .map(meld => meld.id);
+  }, [selectedCards, humanPlayer, playerTeam]);
 
   const isValidMeldSelection = (cardIds: string[]): boolean => {
     if (!humanPlayer || cardIds.length < 3) return false;
@@ -584,7 +642,6 @@ function TrancaGame() {
   const leftOpponentPlayer = players.find((p) => p.id === "player-1");
   const rightOpponentPlayer = players.find((p) => p.id === "player-3");
 
-  const playerTeam = teams.find((t) => t.playerIds.includes("player-0"));
   const opponentTeam = teams.find((t) => !t.playerIds.includes("player-0"));
 
   const topDiscard = discardPile.length > 0 ? discardPile[discardPile.length - 1] : null;
@@ -592,36 +649,52 @@ function TrancaGame() {
   const isSelectionMeldable = isValidMeldSelection(selectedCards);
 
   const handleCardClick = (cardId: string) => {
-    if (lastDrawnCardId || justificationCardId) dispatch({ type: "ACKNOWLEDGE_DRAWN_CARD" });
-    setSelectedCards(current => current.includes(cardId) ? current.filter(id => id !== cardId) : [...current, cardId]);
+    // Acknowledge a newly drawn card from deck, but not a justification card
+    if (lastDrawnCardId && !justificationCardId) {
+      dispatch({ type: "ACKNOWLEDGE_DRAWN_CARD" });
+    }
+
+    setSelectedCards(current => 
+      current.includes(cardId) 
+        ? current.filter(id => id !== cardId) 
+        : [...current, cardId]
+    );
   };
 
   const handleAddToMeld = (meldId: string) => {
+    if (turnPhase === "MUST_JUSTIFY_DISCARD" && justificationCardId) {
+      dispatch({ type: "ADD_TO_MELD", payload: { cardIds: [justificationCardId], meldId } });
+      setSelectedCards([]);
+      return;
+    }
     if (selectedCards.length > 0 && turnPhase === "DISCARD") {
       dispatch({ type: "ADD_TO_MELD", payload: { cardIds: selectedCards, meldId } });
       setSelectedCards([]);
     }
   };
 
-  const handleDiscardPileClick = () => {
-    if (turnPhase !== "DRAW" || isDiscardPileLocked) return;
-    dispatch({ type: "TAKE_DISCARD_PILE" });
-  };
-  
-  const handleMeldAreaClick = () => {
-    if (turnPhase !== "DISCARD" || !isSelectionMeldable) return;
-    dispatch({ type: "MELD", payload: { cardIds: selectedCards } });
-    setSelectedCards([]);
-  };
+  const handleDiscardAreaClick = () => {
+    // Se for a vez de comprar e o lixo não estiver bloqueado, tenta pegar o lixo.
+    if (isPlayerTurn && turnPhase === 'DRAW' && !isDiscardPileLocked) {
+      dispatch({ type: "TAKE_DISCARD_PILE" });
+      return;
+    }
 
-  const handleDiscardClick = () => {
-     if (selectedCards.length === 1 && turnPhase === "DISCARD") {
+    // Se for a vez de descartar e uma carta estiver selecionada, descarta.
+    if (isPlayerTurn && turnPhase === 'DISCARD' && selectedCards.length === 1) {
       dispatch({ type: "DISCARD", payload: { cardId: selectedCards[0] } });
       setSelectedCards([]);
+      return;
     }
   };
-  
-  const sortBySuit = () => {
+
+  const handleMeldAreaClick = () => {
+     if (!isPlayerTurn || (turnPhase !== "DISCARD" && turnPhase !== "MUST_JUSTIFY_DISCARD") || !isSelectionMeldable) return;
+     dispatch({ type: "MELD", payload: { cardIds: selectedCards } });
+     setSelectedCards([]);
+   };
+
+   const sortBySuit = () => {
     if (!humanPlayer) return;
     const sortedHand = [...humanPlayer.hand].sort((a, b) => {
       const suitOrder: { [key: string]: number } = { hearts: 0, diamonds: 1, clubs: 2, spades: 3 };
@@ -705,7 +778,7 @@ function TrancaGame() {
 
         <TableCenter>
           <MeldContainer>
-            <MeldAreaDisplay teamName="Jogos da Dupla Oponente" melds={opponentTeam?.melds ?? []} />
+            <MeldAreaDisplay teamName="Jogos da Dupla Oponente" melds={opponentTeam?.melds ?? []} onMeldClick={handleMeldAreaClick} />
           </MeldContainer>
 
           <DeckAndDiscardContainer>
@@ -713,11 +786,14 @@ function TrancaGame() {
               <Typography variant="caption" sx={{ position: "absolute", top: "-1.5rem", width: "100%", textAlign: "center" }}>Monte ({state.deck.length})</Typography>
               <OpponentCardBack />
             </Box>
-            <Box sx={{ position: "relative", cursor: "pointer" }} onClick={handleDiscardClick}>
+            <Box sx={{ position: "relative", cursor: "pointer" }} onClick={handleDiscardAreaClick}>
               <Typography variant="caption" sx={{ position: "absolute", top: "-1.5rem", width: "100%", textAlign: "center" }}>Lixeira ({state.discardPile.length})</Typography>
               {isDiscardPileLocked && <LockIcon style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: 'rgba(255, 255, 0, 0.8)', fontSize: '5rem', zIndex: 2 }} />}
               {topDiscard ? (
-                <GameCard card={topDiscard} isDiscardValid={isDiscardCardPotentiallyUseful(topDiscard)} onClick={handleDiscardPileClick} />
+                <GameCard
+                   card={topDiscard}
+                   isDiscardValid={isPlayerTurn && turnPhase === 'DRAW' && isDiscardCardPotentiallyUseful(topDiscard)}
+                />
               ) : (
                 <DiscardPilePlaceholder />
               )}
@@ -725,7 +801,7 @@ function TrancaGame() {
           </DeckAndDiscardContainer>
 
           <MeldContainer onClick={handleMeldAreaClick} $isMeldable={isPlayerTurn && isSelectionMeldable}>
-            <MeldAreaDisplay teamName="Seus Jogos" melds={playerTeam?.melds ?? []} onMeldClick={handleAddToMeld} highlightedMeldIds={highlightedMeldIds} />
+            <MeldAreaDisplay teamName="Seus Jogos" melds={playerTeam?.melds ?? []} onMeldClick={handleAddToMeld} highlightedMeldIds={meldableMeldIds} />
           </MeldContainer>
         </TableCenter>
 
@@ -736,14 +812,25 @@ function TrancaGame() {
 
         <PlayerArea $area="human-player" $isCurrentTurn={isPlayerTurn}>
           <HandContainer $area="human-player">
-            {humanPlayer?.hand.map((card) => (
-              <GameCard
+            {humanPlayer?.hand.map((card, index) => (
+              <Box
                 key={card.id}
-                card={card}
-                onClick={handleCardClick}
-                isSelected={selectedCards.includes(card.id)}
-                isNewlyDrawn={card.id === lastDrawnCardId || card.id === justificationCardId}
-              />
+                sx={{
+                  position: 'relative',
+                  zIndex: index,
+                  '&:hover': {
+                    zIndex: 100,
+                  }
+                }}
+              >
+                <GameCard
+                  card={card}
+                  onClick={handleCardClick}
+                  isSelected={selectedCards.includes(card.id)}
+                  isNewlyDrawn={card.id === lastDrawnCardId || card.id === justificationCardId}
+                  isJustificationCard={card.id === justificationCardId}
+                />
+              </Box>
             ))}
           </HandContainer>
           <Box sx={{ position: "absolute", top: "50%", right: "-5rem", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: "0.5rem", zIndex: 10 }}>
@@ -766,13 +853,7 @@ function TrancaGame() {
 
 function TrancaGameWrapper() {
   return (
-    <Suspense
-      fallback={
-        <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", backgroundColor: "#0c3b2e" }}>
-          <Typography color="white">Carregando...</Typography>
-        </Box>
-      }
-    >
+    <Suspense fallback={<div>Carregando...</div>}>
       <TrancaGame />
     </Suspense>
   );

@@ -32,7 +32,7 @@ const cardValueMap: { [key: string]: number } = {
   'A': 14, 'K': 13, 'Q': 12, 'J': 11, '10': 10, '9': 9, '8': 8, '7': 7, '6': 6, '5': 5, '4': 4, '3': 3, '2': 2
 };
 
-function getCardNumericValue(card: CardType): number {
+export function getCardNumericValue(card: CardType): number {
   if (card.isWildcard) return 2; // Curinga
   return cardValueMap[card.value] || 0;
 }
@@ -130,17 +130,17 @@ export function isValidMeld(cards: CardType[]): { isValid: boolean, type: MeldTy
   const firstSuit = regularCards[0].suit;
   if (regularCards.every(c => c.suit === firstSuit)) {
     const sortedRegulars = [...regularCards].sort((a, b) => getCardNumericValue(a) - getCardNumericValue(b));
-    let gaps = 0;
-    for (let i = 1; i < sortedRegulars.length; i++) {
-      const diff = getCardNumericValue(sortedRegulars[i]) - getCardNumericValue(sortedRegulars[i - 1]);
-      if (diff > 1) {
-        gaps += (diff - 1);
-      } else if (diff === 0) {
-        return { isValid: false, type: null }; // No duplicate cards in a run
+    
+    // Verifica se há cartas duplicadas na sequência
+    for (let i = 0; i < sortedRegulars.length - 1; i++) {
+      if (getCardNumericValue(sortedRegulars[i]) === getCardNumericValue(sortedRegulars[i + 1])) {
+        return { isValid: false, type: null }; // Duplicatas não são permitidas em sequências
       }
     }
 
-    if (gaps <= wildcards.length) {
+    const requiredWildcards = (getCardNumericValue(sortedRegulars[sortedRegulars.length - 1]) - getCardNumericValue(sortedRegulars[0])) - (sortedRegulars.length - 1);
+    
+    if (requiredWildcards <= wildcards.length) {
        const canastaType = cards.length >= 7 ? (wildcards.length > 0 ? 'dirty' : 'clean') : undefined;
        return { isValid: true, type: 'run', canastaType };
     }
@@ -187,10 +187,10 @@ export function canPickupDiscard(
 // --- Funções de Pontuação ---
 
 const cardPoints: { [key: string]: number } = {
-  'A': 15,
+  'A': 10,
   '2': 10, // Curinga
   'K': 10, 'Q': 10, 'J': 10, '8': 10, '9': 10, '10': 10,
-  '7': 5, '6': 5, '5': 5, '4': 5,
+  '7': 10, '6': 10, '5': 10, '4': 10,
   '3': 100, // Penalidade do 3 preto, bônus do 3 vermelho
 };
 
@@ -203,8 +203,40 @@ const canastaBonus: { [key in CanastaType]: number } = {
 const BATE_BONUS = 100;
 const DEAD_PILE_PENALTY = -100;
 const RED_THREE_BONUS = 100;
+const RED_THREE_PENALTY = -100;
 const BLACK_THREE_IN_HAND_PENALTY = -100;
 
+
+/**
+ * Calcula a pontuação em tempo real de uma equipe com base nos jogos na mesa.
+ * @param team A equipe a ser pontuada.
+ */
+export function calculateLiveScore(team: Team): number {
+  let score = 0;
+  const teamHasCanasta = team.melds.some(m => !!m.canastaType);
+
+  // 1. Pontos das cartas nos jogos
+  team.melds.forEach(meld => {
+    meld.cards.forEach(card => {
+      score += cardPoints[card.value] || 0;
+    });
+  });
+
+  // 2. Bônus de Canasta
+  team.melds.forEach(meld => {
+    if (meld.canastaType) {
+      score += canastaBonus[meld.canastaType];
+    }
+  });
+
+  // 3. Pontos dos 3s Vermelhos
+  if (team.redThrees.length > 0) {
+    const redThreeScore = teamHasCanasta ? RED_THREE_BONUS : RED_THREE_PENALTY;
+    score += team.redThrees.length * redThreeScore;
+  }
+
+  return score;
+}
 
 /**
  * Calcula a pontuação final de uma equipe no final da rodada.
@@ -219,6 +251,7 @@ export function calculateRoundScore(
   unpickedDeadPile?: CardType[]
 ): number {
   let totalScore = 0;
+  const teamHasCanasta = team.melds.some(m => !!m.canastaType);
 
   // 1. Somar pontos dos jogos na mesa (melds)
   team.melds.forEach(meld => {
@@ -232,12 +265,18 @@ export function calculateRoundScore(
     }
   });
 
-  // 2. Bônus da Batida
+  // 2. Pontos dos 3s Vermelhos
+  if (team.redThrees.length > 0) {
+    const redThreeScore = teamHasCanasta ? RED_THREE_BONUS : RED_THREE_PENALTY;
+    totalScore += team.redThrees.length * redThreeScore;
+  }
+
+  // 3. Bônus da Batida
   if (hasGoneOut) {
     totalScore += BATE_BONUS;
   }
 
-  // 3. Somar (subtrair) pontos das cartas na mão dos jogadores da equipe
+  // 4. Somar (subtrair) pontos das cartas na mão dos jogadores da equipe
   team.playerIds.forEach(playerId => {
     const player = allPlayers.find(p => p.id === playerId);
     if (player) {
@@ -251,16 +290,6 @@ export function calculateRoundScore(
     }
   });
 
-  // 4. Bônus/Penalidade dos Três Vermelhos
-  const hasCanasta = team.melds.some(meld => meld.canastaType);
-  if (team.redThrees.length > 0) {
-    if (hasCanasta) {
-      totalScore += team.redThrees.length * RED_THREE_BONUS;
-    } else {
-      totalScore -= team.redThrees.length * RED_THREE_BONUS;
-    }
-  }
-  
   // 5. Penalidade por não pegar o morto
   if (!team.hasPickedUpDeadPile) {
     totalScore += DEAD_PILE_PENALTY;
