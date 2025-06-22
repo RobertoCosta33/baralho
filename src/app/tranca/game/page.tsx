@@ -4,6 +4,8 @@ import { useReducer, useEffect, useState, Suspense, useMemo, useRef } from "reac
 import { Box, Typography, Button } from "@mui/material";
 import styled, { keyframes, css } from "styled-components";
 import LockIcon from '@mui/icons-material/Lock';
+import Snackbar from '@mui/material/Snackbar';
+import MuiAlert from '@mui/material/Alert';
 
 import { Card as CardType } from "@/services/api";
 import { dealCards, getCardValue } from "@/utils/cards";
@@ -411,22 +413,14 @@ function gameReducer(state: GameState, action: GameAction): GameState {
           
           const updatedTeams = newTeams.map(t => ({ ...t, roundScore: calculateLiveScore(t) }));
 
-          // Verifica se o monte ficou vazio após comprar a carta adicional
-          if (newDeck.length === 0) {
-            return handleGameOver(); // Jogo termina sem vencedor específico
-          }
-
+          // Não termina o jogo aqui, apenas segue normalmente
           return { ...state, deck: newDeck, players: newPlayers, teams: updatedTeams as [Team, Team], turnPhase: "DRAW", lastDrawnCardId: newCard?.id || null, hasDrawnCardThisTurn: true };
       }
       
       const newHand = [...player.hand, drawnCard];
       newPlayers[state.currentPlayerIndex] = { ...player, hand: newHand };
 
-      // Verifica se o monte ficou vazio
-      if (newDeck.length === 0) {
-        return handleGameOver(); // Jogo termina sem vencedor específico
-      }
-
+      // Não termina o jogo aqui, apenas segue normalmente
       return { ...state, deck: newDeck, players: newPlayers, turnPhase: "DISCARD", lastDrawnCardId: drawnCard.id, hasDrawnCardThisTurn: true };
     }
     case "DISCARD": {
@@ -442,6 +436,13 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       const newDiscardPile = [...state.discardPile, cardToDiscard];
       let newTeams = state.teams;
       let newDeadPiles = state.deadPiles;
+
+      // FIM DE JOGO: Se o monte está vazio após o descarte, o jogo termina
+      if (state.deck.length === 0) {
+        // Se alguém bateu, a lógica de handleGameOver já cobre
+        // Aqui, só termina se o monte está vazio e ninguém bateu
+        return handleGameOver();
+      }
 
       if (newHand.length === 0) {
         const playerTeam = state.teams.find((t) => t.playerIds.includes(player.id))!;
@@ -990,6 +991,16 @@ function usePrevious<T>(value: T): T | undefined {
   return ref.current;
 }
 
+// SVG de lápide
+const TombstoneSVG = () => (
+  <svg width="54" height="68" viewBox="0 0 54 68" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="9" y="20" width="36" height="40" rx="8" fill="#B0B0B0" stroke="#444" strokeWidth="2"/>
+    <ellipse cx="27" cy="20" rx="18" ry="18" fill="#B0B0B0" stroke="#444" strokeWidth="2"/>
+    <rect x="15" y="54" width="24" height="6" rx="3" fill="#888" />
+    <text x="27" y="26" textAnchor="middle" fontSize="16" fill="#fff" fontWeight="bold">RIP</text>
+  </svg>
+);
+
 function TrancaGame() {
   const [state, dispatch] = useReducer(gameReducer, {
     players: [],
@@ -1021,6 +1032,30 @@ function TrancaGame() {
   const [animatingRedThree, setAnimatingRedThree] = useState<{ card: CardType; startPos: { x: number; y: number }; endPos: { x: number; y: number } } | null>(null);
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
   const [activeAnimations, setActiveAnimations] = useState<AnimationInfo[]>([]);
+
+  // Alerta de morto
+  const [deadPileAlert, setDeadPileAlert] = useState<{ open: boolean, type: 'direta' | 'indireta' | null }>({ open: false, type: null });
+  const prevPlayers = usePrevious(state.players);
+  const prevTeams = usePrevious(state.teams);
+
+  useEffect(() => {
+    if (!prevPlayers || !prevTeams) return;
+    const human = state.players.find(p => p.id === 'player-0');
+    const prevHuman = prevPlayers.find(p => p.id === 'player-0');
+    const team = state.teams.find(t => t.playerIds.includes('player-0'));
+    const prevTeam = prevTeams.find(t => t.playerIds.includes('player-0'));
+    if (!human || !prevHuman || !team || !prevTeam) return;
+
+    // Pegou o morto agora
+    if (!prevTeam.hasPickedUpDeadPile && team.hasPickedUpDeadPile) {
+      // Batida direta: se a mão do jogador foi reposta e ele continua jogando
+      if (state.currentPlayerIndex === 0 && state.turnPhase === 'DISCARD') {
+        setDeadPileAlert({ open: true, type: 'direta' });
+      } else {
+        setDeadPileAlert({ open: true, type: 'indireta' });
+      }
+    }
+  }, [state.players, state.teams, state.currentPlayerIndex, state.turnPhase]);
 
   const playAnimation = (card: CardType, startPos: keyof typeof gameAreaPositions, endPos: keyof typeof gameAreaPositions, duration = 0.5, isCardBack = false) => {
     const newAnimation: AnimationInfo = {
@@ -1419,6 +1454,12 @@ function TrancaGame() {
     setHoveredCardIndex(null);
   };
 
+  useEffect(() => {
+    if (state.gamePhase === 'GAME_OVER' && deadPileAlert.open) {
+      setDeadPileAlert({ open: false, type: null });
+    }
+  }, [state.gamePhase]);
+
   if (gamePhase === "GAME_OVER") {
     const team1 = teams[0];
     const team2 = teams[1];
@@ -1577,6 +1618,7 @@ function TrancaGame() {
             ref={handContainerRef}
             onMouseMove={handleMouseMoveOnHand}
             onMouseLeave={handleMouseLeaveHand}
+            style={{ position: 'relative' }}
           >
             {humanPlayer?.hand.map((card, index) => (
               <Box
@@ -1609,6 +1651,12 @@ function TrancaGame() {
                 )}
               </Box>
             ))}
+            {/* Lápide se a dupla já pegou o morto */}
+            {playerTeam?.hasPickedUpDeadPile && (
+              <div style={{ position: 'absolute', right: -70, top: '50%', transform: 'translateY(-50%)', zIndex: 20 }}>
+                <TombstoneSVG />
+              </div>
+            )}
           </HandContainer>
           <Box sx={{ position: "absolute", top: "50%", right: "-5rem", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: "0.5rem", zIndex: 10 }}>
             <Button variant="outlined" onClick={sortBySuit} sx={{ minWidth: "auto", px: 1.2, py: 0.5, borderColor: "rgba(0, 0, 0, 0.2)", backgroundColor: "rgba(255, 255, 255, 0.8)", "&:hover": { borderColor: "black", backgroundColor: "rgba(255, 255, 255, 1)", }, }}>
@@ -1624,6 +1672,13 @@ function TrancaGame() {
           </Box>
         </PlayerArea>
       </TableGrid>
+
+      {/* Snackbar para alerta de morto */}
+      <Snackbar open={deadPileAlert.open} onClose={() => setDeadPileAlert({ open: false, type: null })} anchorOrigin={{ vertical: 'top', horizontal: 'center' }}>
+        <MuiAlert onClose={() => setDeadPileAlert({ open: false, type: null })} severity="info" sx={{ width: '100%' }}>
+          {deadPileAlert.type === 'direta' ? 'Você pegou o morto! Continue jogando normalmente.' : deadPileAlert.type === 'indireta' ? 'Você pegou o morto! Aguarde sua próxima vez para jogar.' : ''}
+        </MuiAlert>
+      </Snackbar>
     </GameArea>
   );
 }
