@@ -201,7 +201,6 @@ const canastaBonus: { [key in CanastaType]: number } = {
 };
 
 const BATE_BONUS = 100;
-const DEAD_PILE_PENALTY = -100;
 const RED_THREE_BONUS = 100;
 const RED_THREE_PENALTY = -100;
 const BLACK_THREE_IN_HAND_PENALTY = -100;
@@ -241,67 +240,75 @@ export function calculateLiveScore(team: Team): number {
 /**
  * Calcula a pontuação final de uma equipe no final da rodada.
  * @param team A equipe a ser pontuada.
- * @param partnerHand As cartas na mão do parceiro.
+ * @param allPlayers Todos os jogadores.
  * @param hasGoneOut Se esta equipe foi a que bateu.
  */
 export function calculateRoundScore(
   team: Team,
   allPlayers: Player[],
-  hasGoneOut: boolean,
-  unpickedDeadPile?: CardType[]
+  hasGoneOut: boolean
 ): number {
-  let totalScore = 0;
-  const teamHasCanasta = team.melds.some(m => !!m.canastaType);
+  let roundScore = 0;
 
-  // 1. Somar pontos dos jogos na mesa (melds)
+  // 1. Soma dos pontos das cartas nos jogos (melds) da equipe.
   team.melds.forEach(meld => {
     meld.cards.forEach(card => {
-      if (card.value === '3') return; // 3 vermelho não conta pontos aqui
-      totalScore += cardPoints[card.value] || 0;
+      roundScore += cardPoints[card.value] || (card.isWildcard ? 10 : 0); // Pontuação para cartas normais e coringas (2).
     });
-    // Bônus de Canasta
+  });
+
+  // 2. Soma dos bônus de canastra.
+  team.melds.forEach(meld => {
     if (meld.canastaType) {
-      totalScore += canastaBonus[meld.canastaType];
+      roundScore += canastaBonus[meld.canastaType];
     }
   });
 
-  // 2. Pontos dos 3s Vermelhos
-  if (team.redThrees.length > 0) {
-    const redThreeScore = teamHasCanasta ? RED_THREE_BONUS : RED_THREE_PENALTY;
-    totalScore += team.redThrees.length * redThreeScore;
-  }
-
-  // 3. Bônus da Batida
+  // 3. Bônus por bater.
   if (hasGoneOut) {
-    totalScore += BATE_BONUS;
+    roundScore += BATE_BONUS;
   }
 
-  // 4. Somar (subtrair) pontos das cartas na mão dos jogadores da equipe
-  team.playerIds.forEach(playerId => {
-    const player = allPlayers.find(p => p.id === playerId);
-    if (player) {
-      player.hand.forEach(card => {
-        if (card.isTranca) { // 3 preto na mão
-          totalScore += BLACK_THREE_IN_HAND_PENALTY;
-        } else {
-          totalScore -= (cardPoints[card.value] || 0);
-        }
-      });
-    }
+  // 4. Deduz os pontos das cartas que sobraram nas mãos dos jogadores da equipe.
+  const teamPlayers = allPlayers.filter(p => team.playerIds.includes(p.id));
+  teamPlayers.forEach(player => {
+    player.hand.forEach(card => {
+      if (card.isTranca) {
+        roundScore += BLACK_THREE_IN_HAND_PENALTY; // Penalidade específica para 3 preto na mão.
+      } else {
+        roundScore -= cardPoints[card.value] || (card.isWildcard ? 10 : 0);
+      }
+    });
   });
-
-  // 5. Penalidade por não pegar o morto
-  if (!team.hasPickedUpDeadPile) {
-    totalScore += DEAD_PILE_PENALTY;
-    // Além da penalidade, as cartas do morto não pego contam como negativas
-    if (unpickedDeadPile) {
-      unpickedDeadPile.forEach(card => {
-        totalScore -= (cardPoints[card.value] || 0);
-      });
+  
+  // 5. Pontuação dos 3s Vermelhos.
+  if (team.redThrees.length > 0) {
+    const hasAnyCanasta = team.melds.some(m => m.canastaType);
+    if (hasAnyCanasta) {
+      roundScore += team.redThrees.length * RED_THREE_BONUS;
+    } else {
+      // Se não tem canastra, cada 3 vermelho conta como penalidade.
+      roundScore += team.redThrees.length * RED_THREE_PENALTY;
     }
+  }
+
+  // 6. Penalidade do morto (se a equipe adversária bateu e esta equipe não pegou o morto).
+  // Esta lógica precisa ser aplicada fora, no reducer, pois depende do estado da outra equipe.
+  // Mas para o caso de batida indireta, podemos ter uma indicação.
+  // Assumimos que o reducer vai verificar se !team.hasPickedUpDeadPile && !hasGoneOut
+  if (!team.hasPickedUpDeadPile && !hasGoneOut) {
+     // A lógica principal de -100 pontos para o time que não bateu e não pegou o morto
+     // será inferida pelo `handleGameOver` no reducer, que verifica qual time bateu.
+     // No entanto, a regra da "batida indireta" precisa ser considerada.
+     // A implementação atual no reducer já cobre o cenário de não ter pego o morto.
+     // Se uma equipe não pegou o morto, ela simplesmente não soma os 100 da batida
+     // e paga as cartas da mão. A penalidade de -100 é aplicada à dupla que NÃO BATEU e não pegou o morto.
+     
+     // O `handleGameOver` no `page.tsx` precisa ser ajustado para essa lógica.
+     // Aqui, apenas calculamos os pontos base da equipe. O reducer fará o resto.
   }
   
-  return totalScore;
+  return roundScore;
 }
 
 // Adicionando o valor numérico ao tipo Card para uso em toda a aplicação

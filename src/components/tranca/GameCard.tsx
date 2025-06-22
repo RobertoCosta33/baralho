@@ -85,9 +85,13 @@ const StyledGameCard = styled(Card)<{
       animation: ${justificationAnimation} 2s ease-in-out infinite;
     `}
   
-  &:hover {
-    transform: translateY(-10px) scale(1.05);
-  }
+  ${(props) =>
+    !props.$noInteraction &&
+    css`
+      &:hover {
+        transform: translateY(-10px) scale(1.05);
+      }
+    `}
 `;
 
 interface CardFaceProps {
