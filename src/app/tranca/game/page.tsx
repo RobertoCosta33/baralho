@@ -1,6 +1,7 @@
 "use client";
 
 import { useReducer, useEffect, useState, Suspense, useMemo, useRef } from "react";
+import { useSearchParams } from 'next/navigation';
 import { Box, Typography, Button } from "@mui/material";
 import styled, { keyframes, css } from "styled-components";
 import LockIcon from '@mui/icons-material/Lock';
@@ -1002,6 +1003,9 @@ const TombstoneSVG = () => (
 );
 
 function TrancaGame() {
+  const searchParams = useSearchParams();
+  const difficulty = searchParams.get('difficulty') || 'normal';
+
   const [state, dispatch] = useReducer(gameReducer, {
     players: [],
     teams: [
@@ -1222,6 +1226,7 @@ function TrancaGame() {
     const currentPlayer = players[currentPlayerIndex];
     if (currentPlayer?.isBot && gamePhase === "PLAYING") {
       const handleBotTurn = () => {
+        const team = teams.find(t => t.playerIds.includes(currentPlayer.id))!;
         const totalRedThreesOnBoard = teams.reduce((acc, t) => acc + t.redThrees.length, 0);
 
         // ESTADO 1: Finalizar o processamento de um 3 vermelho que já foi iniciado.
@@ -1238,6 +1243,13 @@ function TrancaGame() {
 
         // ESTADO 3: Comprar uma carta.
         if (turnPhase === 'DRAW') {
+          if (difficulty === 'hard') {
+            const topCard = state.discardPile[state.discardPile.length - 1];
+            if (topCard && canJustifyDiscardPickup(topCard, currentPlayer.hand, team.melds)) {
+              dispatch({ type: "TAKE_DISCARD_PILE" });
+              return;
+            }
+          }
           dispatch({ type: 'DRAW_FROM_DECK' });
           return;
         }
@@ -1245,44 +1257,115 @@ function TrancaGame() {
         // ESTADO 4: Fazer um jogo ou descartar.
         if (turnPhase === 'DISCARD') {
           const botHand = currentPlayer.hand;
-          
-          // Tenta fazer um jogo (meld)
-          const valueGroups: { [key: string]: CardType[] } = {};
-          botHand.forEach(card => {
-            if (!card.isWildcard && !card.isTranca && !card.isRedThree) {
-              if (!valueGroups[card.value]) valueGroups[card.value] = [];
-              valueGroups[card.value].push(card);
-            }
-          });
 
-          const cardsToMeldIds: string[] = [];
-          for (const value in valueGroups) {
-            if (valueGroups[value].length >= 3) {
-              cardsToMeldIds.push(...valueGroups[value].map(c => c.id));
-              break; 
+          // Lógica de Meld para Normal e Difícil
+          if (difficulty === 'normal' || difficulty === 'hard') {
+            // Tenta agrupar todas as cartas de um mesmo valor para fazer o maior jogo possível
+            const valueGroups: { [key: string]: CardType[] } = {};
+            botHand.forEach(card => {
+              if (!card.isWildcard && !card.isTranca && !card.isRedThree) {
+                const value = card.value;
+                if (!valueGroups[value]) valueGroups[value] = [];
+                valueGroups[value].push(card);
+              }
+            });
+
+            let bestNewMeld: CardType[] = [];
+            for (const value in valueGroups) {
+              const meldExists = team.melds.some(m => m.cards.some(c => c.value === value));
+              if (meldExists) continue; // Não cria novo jogo se já existe um com esse valor
+
+              if (valueGroups[value].length >= 3 && valueGroups[value].length > bestNewMeld.length) {
+                bestNewMeld = valueGroups[value];
+              }
+            }
+
+            if (bestNewMeld.length > 0) {
+              dispatch({ type: "MELD", payload: { cardIds: bestNewMeld.map(c => c.id) } });
+              return;
+            }
+          } else { // Lógica de Meld para Fácil
+            const valueGroups: { [key: string]: CardType[] } = {};
+            botHand.forEach(card => {
+              if (!card.isWildcard && !card.isTranca && !card.isRedThree) {
+                if (!valueGroups[card.value]) valueGroups[card.value] = [];
+                valueGroups[card.value].push(card);
+              }
+            });
+
+            const cardsToMeldIds: string[] = [];
+            for (const value in valueGroups) {
+              if (valueGroups[value].length >= 3) {
+                cardsToMeldIds.push(...valueGroups[value].map(c => c.id));
+                break; 
+              }
+            }
+            
+            if (cardsToMeldIds.length > 0) {
+              dispatch({ type: "MELD", payload: { cardIds: cardsToMeldIds } });
+              return;
             }
           }
-          
-          if (cardsToMeldIds.length > 0) {
-            dispatch({ type: "MELD", payload: { cardIds: cardsToMeldIds } });
-            return;
+
+          // Lógica de Descarte
+          let cardToDiscard: CardType | undefined;
+
+          if (difficulty === 'hard') {
+            const nextPlayerIndex = (currentPlayerIndex + 1) % players.length;
+            const nextPlayer = players[nextPlayerIndex];
+            const nextPlayerTeam = teams.find(t => t.playerIds.includes(nextPlayer.id))!;
+            
+            // Tenta descartar uma carta que o oponente não pode usar
+            cardToDiscard = botHand.find(card => 
+              !card.isWildcard && 
+              !card.isTranca && 
+              !canJustifyDiscardPickup(card, nextPlayer.hand, nextPlayerTeam.melds)
+            );
           }
 
-          // Se não fez meld, descarta
-          const cardToDiscard = botHand
-            .filter(c => !c.isWildcard)
-            .sort((a,b) => getCardValue(a) - getCardValue(b))
-            .pop() || botHand[0]; 
+          // Se não encontrou uma carta segura (ou dificuldade não é hard), usa a lógica padrão
+          if (!cardToDiscard) {
+            // Tenta descartar qualquer carta, se só houver curingas ou trancas
+            cardToDiscard = botHand[0];
+          }
 
           if (cardToDiscard) {
             dispatch({ type: "DISCARD", payload: { cardId: cardToDiscard.id } });
           }
         }
+
+        if (turnPhase === 'MUST_JUSTIFY_DISCARD') {
+          const justificationCardId = state.justificationCardId;
+          const justificationCard = currentPlayer.hand.find(c => c.id === justificationCardId);
+          if (!justificationCard) return;
+
+          // Tenta adicionar ao meld existente
+          for (const meld of team.melds) {
+            if (canAddToMeld(justificationCard, meld).canAdd) {
+              dispatch({ type: 'ADD_TO_MELD', payload: { cardIds: [justificationCardId!], meldId: meld.id } });
+              return;
+            }
+          }
+
+          // Tenta criar um novo meld com a carta do lixo + 2 cartas da mão
+          const handWithoutJustification = currentPlayer.hand.filter(c => c.id !== justificationCardId);
+          for (let i = 0; i < handWithoutJustification.length; i++) {
+            for (let j = i + 1; j < handWithoutJustification.length; j++) {
+              const candidate = [justificationCard, handWithoutJustification[i], handWithoutJustification[j]];
+              if (isValidMeld(candidate).isValid) {
+                dispatch({ type: 'MELD', payload: { cardIds: candidate.map(c => c.id) } });
+                return;
+              }
+            }
+          }
+          // Se não conseguir justificar, não faz nada (pode travar, mas é regra do jogo)
+          return;
+        }
       };
 
       setTimeout(handleBotTurn, 1200);
     }
-  }, [gamePhase, currentPlayerIndex, players, turnPhase, dispatch, teams]);
+  }, [gamePhase, currentPlayerIndex, players, turnPhase, dispatch, teams, difficulty]);
 
   // Acknowledge a carta recém-comprada do monte após processar 3 vermelho
   useEffect(() => {
@@ -1352,7 +1435,7 @@ function TrancaGame() {
       if (state.tempDiscardPile.length > 0) {
         state.tempDiscardPile.forEach(card => playAnimation(card, "discard", "player"));
       }
-      dispatch({ type: "ADD_TO_MELD", payload: { cardIds: [justificationCardId], meldId } });
+      dispatch({ type: "ADD_TO_MELD", payload: { cardIds: [justificationCardId!], meldId } });
       setSelectedCards([]);
       return;
     }
